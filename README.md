@@ -4,7 +4,13 @@ A window for AppArmor. It lists profiles, running services, and installed applic
 
 The window is GTK 4. GTK draws the window itself on X11 or Wayland, so the same program runs under any desktop or window manager. The module installs GTK with the program. It does not install GNOME, KDE, or a window manager, and the desktop file is not limited to one session. On a machine with no application menu, run `apparmor-gui`.
 
-The window is a NixOS module. It does not contain a host configuration, a username, or any sample profiles. Another NixOS system can import this flake and use its own packages.
+Start the window with:
+
+```
+nix run github:jdnitrap/apparmor-gui
+```
+
+Installing the NixOS module also puts the window in the application list and loads its saved profiles after each rebuild. The module uses that system's own package set. `nix run` uses the nixpkgs pin in this flake. The flake does not contain a host configuration, a username, or any sample profiles.
 
 Profiles the window creates are stored in `/var/lib/apparmor-gui` and loaded again whenever AppArmor starts or reloads. The module does not edit your Nix files. A mode change for a profile that already comes from NixOS is stored beside it and applied after the system profile, so a package update still supplies the new profile text. Changing the rules copies the profile into `/var/lib/apparmor-gui`, and that copy is what the window keeps.
 
