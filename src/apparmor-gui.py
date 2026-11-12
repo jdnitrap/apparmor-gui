@@ -7,8 +7,7 @@ import threading
 import gi
 
 gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Adw, Gio, GLib, Gtk
+from gi.repository import Gio, GLib, Gtk
 
 
 def backend(*args):
@@ -24,7 +23,7 @@ def backend(*args):
     return json.loads(result.stdout)
 
 
-class Window(Adw.ApplicationWindow):
+class Window(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="AppArmor")
         self.set_default_size(1040, 720)
@@ -33,7 +32,12 @@ class Window(Adw.ApplicationWindow):
         self.app_rows = []
         self.learn_proc = None
 
-        self.banner = Adw.Banner()
+        self.banner = Gtk.Label(xalign=0, wrap=True)
+        self.banner.add_css_class("notice")
+        self.banner.set_visible(False)
+        self.banner.set_margin_top(8)
+        self.banner.set_margin_start(12)
+        self.banner.set_margin_end(12)
         self.profiles = self.list_box()
         self.services = self.list_box()
         self.apps = self.list_box()
@@ -51,29 +55,61 @@ class Window(Adw.ApplicationWindow):
         self.exec_command = Gtk.Entry(placeholder_text="command to run under the profile")
         self.exec_command.set_hexpand(True)
 
-        header = Adw.HeaderBar()
-        stack = Adw.ViewStack()
-        switcher = Adw.ViewSwitcher(stack=stack, policy=Adw.ViewSwitcherPolicy.WIDE)
+        header = Gtk.HeaderBar()
+        stack = Gtk.Stack()
+        switcher = Gtk.StackSwitcher(stack=stack)
         header.set_title_widget(switcher)
-        refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
-        refresh.set_tooltip_text("Refresh")
+        refresh = Gtk.Button(label="Refresh")
         refresh.connect("clicked", lambda *_: self.reload(clear=True))
         header.pack_start(refresh)
 
-        stack.add_titled_with_icon(self.machine_page(), "machine", "Machine", "system-run-symbolic")
-        stack.add_titled_with_icon(self.profiles_page(), "profiles", "Profiles", "security-high-symbolic")
-        stack.add_titled_with_icon(self.log_page(), "log", "Log", "text-x-generic-symbolic")
-        stack.add_titled_with_icon(self.commands_page(), "commands", "Commands", "utilities-terminal-symbolic")
+        stack.add_titled(self.machine_page(), "machine", "Machine")
+        stack.add_titled(self.profiles_page(), "profiles", "Profiles")
+        stack.add_titled(self.log_page(), "log", "Log")
+        stack.add_titled(self.commands_page(), "commands", "Commands")
 
-        toolbar = Adw.ToolbarView()
-        toolbar.add_top_bar(header)
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         box.append(self.banner)
         box.append(stack)
         stack.set_vexpand(True)
-        toolbar.set_content(box)
-        self.set_content(toolbar)
+        self.set_titlebar(header)
+        self.set_child(box)
+        self.install_style()
         self.reload(clear=True)
+
+    def install_style(self):
+        # These class names are drawn by this program. The session theme is left alone.
+        provider = Gtk.CssProvider()
+        provider.load_from_string(
+            ".title-1 { font-size: 20px; font-weight: 700; }"
+            ".title-2 { font-size: 16px; font-weight: 700; }"
+            ".dim-label { opacity: 0.72; }"
+            ".notice { padding: 8px 12px; }"
+        )
+        display = self.get_display()
+        if display is not None:
+            Gtk.StyleContext.add_provider_for_display(
+                display,
+                provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+            )
+
+    def action_row(self, title, subtitle=""):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        row.set_margin_top(8)
+        row.set_margin_bottom(8)
+        row.set_margin_start(12)
+        row.set_margin_end(12)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        text.set_hexpand(True)
+        text.set_valign(Gtk.Align.CENTER)
+        text.append(Gtk.Label(label=title, xalign=0, wrap=True))
+        if subtitle:
+            sub = Gtk.Label(label=subtitle, xalign=0, wrap=True)
+            sub.add_css_class("dim-label")
+            text.append(sub)
+        row.append(text)
+        return row
 
     def text_view(self):
         view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR)
@@ -82,7 +118,7 @@ class Window(Adw.ApplicationWindow):
 
     def list_box(self):
         box = Gtk.ListBox()
-        box.add_css_class("boxed-list")
+        box.add_css_class("rows")
         box.set_selection_mode(Gtk.SelectionMode.NONE)
         return box
 
@@ -160,12 +196,12 @@ class Window(Adw.ApplicationWindow):
             ("aa-exec", "Run a command inside a profile. Use the row below. It runs as you, not as root.", None, None),
         ]
         for title, subtitle, label, callback in actions:
-            row = Adw.ActionRow(title=title, subtitle=subtitle)
+            row = self.action_row(title, subtitle)
             if label and callback:
                 button = Gtk.Button(label=label)
                 button.set_valign(Gtk.Align.CENTER)
                 button.connect("clicked", lambda *_b, cb=callback: cb())
-                row.add_suffix(button)
+                row.append(button)
             catalog.append(row)
 
         run = Gtk.Button(label="Run")
@@ -207,16 +243,16 @@ class Window(Adw.ApplicationWindow):
         return page
 
     def show_error(self, message):
-        self.banner.set_title(message.splitlines()[0][:240] if message else "The command failed.")
-        self.banner.set_revealed(True)
+        self.banner.set_text(message.splitlines()[0][:240] if message else "The command failed.")
+        self.banner.set_visible(True)
 
     def note(self, message):
-        self.banner.set_title(message)
-        self.banner.set_revealed(True)
+        self.banner.set_text(message)
+        self.banner.set_visible(True)
 
     def reload(self, clear=False):
         if clear:
-            self.banner.set_revealed(False)
+            self.banner.set_visible(False)
         try:
             data = backend("overview")
         except (RuntimeError, json.JSONDecodeError) as exc:
@@ -239,7 +275,7 @@ class Window(Adw.ApplicationWindow):
     def fill_profiles(self, profiles):
         self.clear(self.profiles)
         if not profiles:
-            self.profiles.append(Adw.ActionRow(title="No profiles loaded"))
+            self.profiles.append(self.action_row("No profiles loaded"))
             return
         for item in profiles:
             bits = [item["mode"]]
@@ -256,8 +292,8 @@ class Window(Adw.ApplicationWindow):
                 bits.append("NixOS profile")
             elif not item.get("saved"):
                 bits.append("loaded by hand")
-            row = Adw.ActionRow(title=item["name"], subtitle=" · ".join(bits))
-            row.add_suffix(self.mode_buttons(item))
+            row = self.action_row(item["name"], " · ".join(bits))
+            row.append(self.mode_buttons(item))
             self.profiles.append(row)
 
     def fill_machine(self):
@@ -281,19 +317,19 @@ class Window(Adw.ApplicationWindow):
                 state = "not confined"
             scope = item.get("scope")
             title = item[title_key] if not scope else f"{item[title_key]}  ·  {scope}"
-            row = Adw.ActionRow(title=title, subtitle=f"{item.get('exec', '')}  ·  {state}")
+            row = self.action_row(title, f"{item.get('exec', '')}  ·  {state}")
             if item.get("kind") == "flatpak":
                 pass
             elif item.get("profile") and item.get("mode"):
-                row.add_suffix(self.small_modes(item["profile"], item["mode"]))
+                row.append(self.small_modes(item["profile"], item["mode"]))
             elif item.get("exec"):
                 button = Gtk.Button(label="Watch")
                 button.set_valign(Gtk.Align.CENTER)
                 button.connect("clicked", self.on_create, item["exec"])
-                row.add_suffix(button)
+                row.append(button)
             box.append(row)
         if shown == 0:
-            box.append(Adw.ActionRow(title="Nothing matches"))
+            box.append(self.action_row("Nothing matches"))
 
     def small_modes(self, name, current):
         box = Gtk.Box(spacing=6)
@@ -396,14 +432,23 @@ class Window(Adw.ApplicationWindow):
             box.remove(child)
 
     def confirm(self, heading, body, ok, action, destructive=True):
-        dialog = Adw.AlertDialog(heading=heading, body=body)
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("ok", ok)
-        if destructive:
-            dialog.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE)
-        dialog.set_close_response("cancel")
-        dialog.connect("response", lambda _dialog, response: action() if response == "ok" else None)
-        dialog.present(self)
+        dialog = Gtk.AlertDialog()
+        dialog.set_message(heading)
+        dialog.set_detail(body)
+        dialog.set_buttons(["Cancel", ok])
+        dialog.set_cancel_button(0)
+        dialog.set_default_button(1)
+        dialog.set_modal(True)
+
+        def chosen(_dialog, result):
+            try:
+                selected = dialog.choose_finish(result)
+            except GLib.Error:
+                return
+            if selected == 1:
+                action()
+
+        dialog.choose(self, None, chosen)
 
     def on_mode(self, _button, name, mode):
         if mode == "complain":
@@ -664,7 +709,12 @@ class Window(Adw.ApplicationWindow):
         self.append_learn("\n".join(line for line in lines if line))
         options = message.get("options") or []
         for option in options:
-            self.learn_options.append(Adw.ActionRow(title=str(option)))
+            option_row = Gtk.Label(label=str(option), xalign=0, wrap=True)
+            option_row.set_margin_top(6)
+            option_row.set_margin_bottom(6)
+            option_row.set_margin_start(8)
+            option_row.set_margin_end(8)
+            self.learn_options.append(option_row)
         selected = message.get("selected") or 0
         if options:
             row = self.learn_options.get_row_at_index(selected)
@@ -755,7 +805,7 @@ def hotkey(label):
     return label[:1].lower()
 
 
-class App(Adw.Application):
+class App(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="org.nixos.AppArmorGui", flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
 
@@ -767,5 +817,4 @@ class App(Adw.Application):
 
 
 if __name__ == "__main__":
-    Adw.init()
     raise SystemExit(App().run())

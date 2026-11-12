@@ -1,6 +1,8 @@
 # apparmor-gui
 
-A GNOME window for AppArmor. It lists profiles, running services, and installed applications. From the window you can watch a program in complain mode, enforce a profile, disable it, turn audit on, clean duplicate rules, and learn rules from the log.
+A window for AppArmor. It lists profiles, running services, and installed applications. From the window you can watch a program in complain mode, enforce a profile, disable it, turn audit on, clean duplicate rules, and learn rules from the log.
+
+The window is GTK 4. GTK draws the window itself on X11 or Wayland, so the same program runs under any desktop or window manager. The module installs GTK with the program. It does not install GNOME, KDE, or a window manager, and the desktop file is not limited to one session. On a machine with no application menu, run `apparmor-gui`.
 
 The window is a NixOS module. It does not contain a host configuration, a username, or any sample profiles. Another NixOS system can import this flake and use its own packages.
 

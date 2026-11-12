@@ -1,4 +1,5 @@
-# A GNOME window for the AppArmor tools.
+# A window for the AppArmor tools. GTK 4 draws it on X11 or Wayland.
+# The package does not require a desktop environment or a window manager.
 # Profiles the window creates are stored in /var/lib/apparmor-gui and loaded
 # after the system's own profiles. The module does not edit the user's Nix files
 # and does not name a user, a host, or a configuration path.
@@ -23,15 +24,14 @@ let
 
   app = pkgs.stdenv.mkDerivation {
     pname = "apparmor-gui";
-    version = "0.1.0";
+    version = "0.2.0";
     dontUnpack = true;
+    # The hook only puts GTK's own libraries on the program path.
     nativeBuildInputs = [ pkgs.wrapGAppsHook4 ];
     buildInputs = [
       pythonEnv
       pkgs.gtk4
-      pkgs.libadwaita
       pkgs.gobject-introspection
-      pkgs.adwaita-icon-theme
     ];
     installPhase = ''
       mkdir -p $out/bin $out/share/apparmor-gui
@@ -49,7 +49,6 @@ EOF
     desktopName = "AppArmor";
     comment = "Profiles, services, applications, and AppArmor commands";
     exec = "apparmor-gui";
-    icon = "security-high";
     categories = [ "System" "Security" ];
     startupNotify = true;
   };
