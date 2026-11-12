@@ -20,14 +20,20 @@ def executable(name, extras=()):
     return shutil.which(name)
 
 
-def backend(*args):
+def backend(*args, root=True):
     program = executable("apparmor-gui-backend")
     if not program:
         raise RuntimeError("apparmor-gui-backend is not installed")
-    pkexec = executable("pkexec", ("/run/wrappers/bin/pkexec", "/usr/bin/pkexec"))
-    if not pkexec:
-        raise RuntimeError("pkexec was not found. Polkit provides it.")
-    result = subprocess.run([pkexec, program, *args], capture_output=True, text=True)
+    if root:
+        pkexec = executable("pkexec", ("/run/wrappers/bin/pkexec", "/usr/bin/pkexec"))
+        if not pkexec:
+            raise RuntimeError("pkexec was not found. Polkit provides it.")
+        command = [pkexec, program, *args]
+    else:
+        # Services, applications, and installed profiles can be read as the
+        # person who opened the window. A password is only needed to change them.
+        command = [program, *args]
+    result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "The request was canceled.").strip()
         raise RuntimeError(message)
@@ -276,7 +282,7 @@ class Window(Gtk.ApplicationWindow):
         if clear:
             self.banner.set_visible(False)
         try:
-            data = backend("overview")
+            data = backend("overview", root=False)
         except (RuntimeError, json.JSONDecodeError, OSError) as exc:
             self.show_error(str(exc))
             return
