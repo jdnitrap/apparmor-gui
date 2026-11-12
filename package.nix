@@ -38,7 +38,7 @@ export PATH=${lib.makeBinPath [
         pkgs.apparmor-bin-utils
         pkgs.apparmor-utils
         pkgs.apparmor-parser
-      ]}:''$PATH
+      ]}:\$PATH
 exec ${pythonEnv}/bin/python3 $out/share/apparmor-gui/apparmor-gui.py
 EOF
       chmod +x $out/bin/apparmor-gui

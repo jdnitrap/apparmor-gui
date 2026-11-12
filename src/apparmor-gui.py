@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -10,11 +11,23 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, Gtk
 
 
+def executable(name, extras=()):
+    # Prefer a path that works when nix run replaces the command path.
+    # On NixOS the setuid pkexec lives in /run/wrappers/bin, not the Nix store.
+    for candidate in extras:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return shutil.which(name)
+
+
 def backend(*args):
-    program = shutil.which("apparmor-gui-backend")
+    program = executable("apparmor-gui-backend")
     if not program:
         raise RuntimeError("apparmor-gui-backend is not installed")
-    result = subprocess.run(["pkexec", program, *args], capture_output=True, text=True)
+    pkexec = executable("pkexec", ("/run/wrappers/bin/pkexec", "/usr/bin/pkexec"))
+    if not pkexec:
+        raise RuntimeError("pkexec was not found. Polkit provides it.")
+    result = subprocess.run([pkexec, program, *args], capture_output=True, text=True)
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "The request was canceled.").strip()
         raise RuntimeError(message)
@@ -255,7 +268,7 @@ class Window(Gtk.ApplicationWindow):
             self.banner.set_visible(False)
         try:
             data = backend("overview")
-        except (RuntimeError, json.JSONDecodeError) as exc:
+        except (RuntimeError, json.JSONDecodeError, OSError) as exc:
             self.show_error(str(exc))
             return
         state = "AppArmor is enabled." if data.get("enabled") else "AppArmor is not enabled."
@@ -578,7 +591,7 @@ class Window(Gtk.ApplicationWindow):
         self.note(f"Started under {profile}.")
 
     def call(self, args, success):
-        self.banner.set_revealed(False)
+        self.banner.set_visible(False)
         try:
             data = backend(*args)
         except (RuntimeError, json.JSONDecodeError) as exc:
@@ -592,12 +605,16 @@ class Window(Gtk.ApplicationWindow):
         if self.learn_proc and self.learn_proc.poll() is None:
             self.show_error("Log learning is already running.")
             return
-        program = shutil.which("apparmor-gui-backend")
+        program = executable("apparmor-gui-backend")
         if not program:
             self.show_error("apparmor-gui-backend is not installed.")
             return
+        run0 = executable("run0", ("/run/current-system/sw/bin/run0", "/usr/bin/run0"))
+        if not run0:
+            self.show_error("run0 was not found. It comes with systemd.")
+            return
         self.learn_proc = subprocess.Popen(
-            ["run0", "--pipe", program, "logprof"],
+            [run0, "--pipe", program, "logprof"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
