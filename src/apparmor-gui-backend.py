@@ -11,12 +11,11 @@ import sys
 import tempfile
 import threading
 
-# Profiles this window creates live here, not in the user's Nix configuration.
-# The NixOS module loads this directory after apparmor.service, including after
-# aa-remove-unknown. APPARMOR_GUI_STATE lets a test use another directory.
-ROOT = os.environ.get("APPARMOR_GUI_STATE", "/var/lib/apparmor-gui")
-PROFILE_DIR = os.path.join(ROOT, "profiles")
-OVERRIDE_DIR = os.path.join(ROOT, "overrides")
+# Saved profiles live in the home directory of the person who opened the window,
+# or in a folder that person chose. The NixOS module reads the registry below
+# and loads those folders after apparmor.service. APPARMOR_GUI_STATE is only
+# for a test.
+REGISTRY = "/var/lib/apparmor-gui/directories"
 CACHE = "/var/cache/apparmor/logprof"
 MODES = ("complain", "enforce", "disable")
 RESERVED = {"tunables", "abstractions", "abi"}
@@ -87,8 +86,81 @@ def user_paths():
         os.path.join(home, ".nix-profile/bin"),
         f"/etc/profiles/per-user/{name}/bin",
     ]
+    app_dirs.extend(session_app_dirs(user))
     user_paths.cached = (user, app_dirs, bin_dirs)
     return user_paths.cached
+
+
+def session_app_dirs(user):
+    # The host session can add application directories beyond the standard ones.
+    code, out = run_text(["systemctl", "--user", "-M", f"{user.pw_name}@", "show-environment"])
+    found = []
+    if code != 0:
+        return found
+    for line in out.splitlines():
+        if line.startswith("XDG_DATA_DIRS=") or line.startswith("XDG_DATA_HOME="):
+            value = line.split("=", 1)[1]
+            for item in value.split(":"):
+                if item:
+                    found.append(os.path.join(item, "applications"))
+    return found
+
+
+def choice_file(user):
+    return os.path.join(user.pw_dir, ".config", "apparmor-gui", "directory")
+
+
+def default_state_dir(user):
+    return os.path.join(user.pw_dir, ".local", "share", "apparmor-gui")
+
+
+def read_choice(user):
+    try:
+        chosen = open(choice_file(user), encoding="utf-8").read().strip()
+    except OSError:
+        return None
+    if chosen and os.path.isabs(chosen):
+        return chosen
+    return None
+
+
+def state_root():
+    forced = os.environ.get("APPARMOR_GUI_STATE")
+    if forced:
+        return forced
+    user = caller()
+    return read_choice(user) or default_state_dir(user)
+
+
+def profile_dir():
+    return os.path.join(state_root(), "profiles")
+
+
+def override_dir():
+    return os.path.join(state_root(), "overrides")
+
+
+def give_to_user(path, user):
+    try:
+        os.chown(path, user.pw_uid, user.pw_gid)
+    except OSError:
+        pass
+
+
+def register_state(path, previous=None):
+    # Root records the folder so a rebuild can load it. The profiles stay in the folder.
+    try:
+        os.makedirs(os.path.dirname(REGISTRY), mode=0o755, exist_ok=True)
+        lines = []
+        if os.path.isfile(REGISTRY):
+            lines = [line.strip() for line in open(REGISTRY, encoding="utf-8") if line.strip()]
+        if previous and previous != path:
+            lines = [line for line in lines if line != previous]
+        if path not in lines:
+            lines.append(path)
+        write_text(REGISTRY, "".join(line + "\n" for line in lines))
+    except OSError:
+        return
 
 
 def include_roots():
@@ -123,8 +195,38 @@ def link_includes(directory):
 
 
 def ensure_state():
-    os.makedirs(PROFILE_DIR, mode=0o755, exist_ok=True)
-    os.makedirs(OVERRIDE_DIR, mode=0o755, exist_ok=True)
+    root = state_root()
+    os.makedirs(profile_dir(), mode=0o755, exist_ok=True)
+    os.makedirs(override_dir(), mode=0o755, exist_ok=True)
+    if os.environ.get("APPARMOR_GUI_STATE"):
+        return root
+    user = caller()
+    for path in (root, profile_dir(), override_dir()):
+        give_to_user(path, user)
+    register_state(root)
+    return root
+
+
+def set_state(path):
+    if not path or not os.path.isabs(path) or not os.path.isdir(path):
+        raise SystemExit("choose a folder that exists")
+    if os.environ.get("APPARMOR_GUI_STATE"):
+        raise SystemExit("APPARMOR_GUI_STATE is set")
+    user = caller()
+    previous = read_choice(user)
+    config = os.path.dirname(choice_file(user))
+    os.makedirs(config, mode=0o755, exist_ok=True)
+    write_text(choice_file(user), os.path.abspath(path) + "\n")
+    give_to_user(config, user)
+    give_to_user(choice_file(user), user)
+    os.chmod(choice_file(user), 0o644)
+    chosen = os.path.abspath(path)
+    os.makedirs(os.path.join(chosen, "profiles"), mode=0o755, exist_ok=True)
+    os.makedirs(os.path.join(chosen, "overrides"), mode=0o755, exist_ok=True)
+    give_to_user(os.path.join(chosen, "profiles"), user)
+    give_to_user(os.path.join(chosen, "overrides"), user)
+    register_state(chosen, previous)
+    return {"state": chosen}
 
 
 def write_text(path, text):
@@ -211,23 +313,49 @@ def policy_record(key, text, mode, managed):
     }
 
 
+def saved_roots():
+    # The current folder is last so it wins when the same profile was saved twice.
+    current = state_root()
+    roots = []
+    if not os.environ.get("APPARMOR_GUI_STATE"):
+        try:
+            for line in open(REGISTRY, encoding="utf-8"):
+                line = line.strip()
+                if line and line not in roots and line != current:
+                    roots.append(line)
+        except OSError:
+            pass
+    roots.append(current)
+    return roots
+
+
 def saved_policies():
     # gui: this window owns the profile text.
     # override: NixOS owns the text; this window only stores the mode.
     # system: the profile is installed and this window has not changed it.
     owned = {}
-    if os.path.isdir(PROFILE_DIR):
-        for name in os.listdir(PROFILE_DIR):
-            if not name.endswith(".profile"):
-                continue
-            key = name[: -len(".profile")]
-            path = os.path.join(PROFILE_DIR, name)
-            try:
-                text = open(path, encoding="utf-8", errors="replace").read()
-            except OSError:
-                continue
-            mode = read_mode_file(os.path.join(PROFILE_DIR, key + ".mode")) or "complain"
-            owned[key] = policy_record(key, text, mode, "gui")
+    overrides = {}
+    for root in saved_roots():
+        directory = os.path.join(root, "profiles")
+        if os.path.isdir(directory):
+            for name in os.listdir(directory):
+                if not name.endswith(".profile"):
+                    continue
+                key = name[: -len(".profile")]
+                path = os.path.join(directory, name)
+                try:
+                    text = open(path, encoding="utf-8", errors="replace").read()
+                except OSError:
+                    continue
+                mode = read_mode_file(os.path.join(directory, key + ".mode")) or "complain"
+                owned[key] = policy_record(key, text, mode, "gui")
+        override_root = os.path.join(root, "overrides")
+        if os.path.isdir(override_root):
+            for name in os.listdir(override_root):
+                if name.endswith(".mode"):
+                    mode = read_mode_file(os.path.join(override_root, name))
+                    if mode:
+                        overrides[name[: -len(".mode")]] = mode
     items = list(owned.values())
     base = "/etc/apparmor.d"
     if os.path.isdir(base):
@@ -241,7 +369,7 @@ def saved_policies():
                 continue
             if not profile_name(text):
                 continue
-            override = read_mode_file(os.path.join(OVERRIDE_DIR, name + ".mode"))
+            override = overrides.get(name)
             items.append(policy_record(name, text, override or "complain", "override" if override else "system"))
     return items
 
@@ -304,8 +432,11 @@ def effective_mode(item):
 
 
 def profiles():
-    data = json.loads(check(["aa-status", "--json"]))
-    raw = data.get("profiles", {})
+    try:
+        data = json.loads(check(["aa-status", "--json"]))
+    except (SystemExit, json.JSONDecodeError):
+        data = {}
+    raw = data.get("profiles", {}) if isinstance(data, dict) else {}
     saved = by_name()
     items = []
     if isinstance(raw, dict):
@@ -334,11 +465,11 @@ def profiles():
             "managed": managed,
         })
     for item in saved.values():
-        if item["name"] in seen or item["managed"] == "system":
+        if item["name"] in seen:
             continue
         items.append({
             "name": item["name"],
-            "mode": item["mode"],
+            "mode": "unloaded" if item["managed"] == "system" else item["mode"],
             "policy": item["key"],
             "audit": item["audit"],
             "exec": item.get("exec") or "",
@@ -545,6 +676,7 @@ def overview():
         "unconfined": lines,
         "unconfined_count": count,
         "log": log_lines(),
+        "state": state_root(),
     }
 
 
@@ -569,23 +701,23 @@ def write_owned(key, mode, body):
     ensure_state()
     if not body.endswith("\n"):
         body += "\n"
-    write_text(os.path.join(PROFILE_DIR, key + ".profile"), body)
-    write_text(os.path.join(PROFILE_DIR, key + ".mode"), mode + "\n")
-    override = os.path.join(OVERRIDE_DIR, key + ".mode")
+    write_text(os.path.join(profile_dir(), key + ".profile"), body)
+    write_text(os.path.join(profile_dir(), key + ".mode"), mode + "\n")
+    override = os.path.join(override_dir(), key + ".mode")
     if os.path.isfile(override):
         os.unlink(override)
 
 
 def write_override(key, mode):
     ensure_state()
-    write_text(os.path.join(OVERRIDE_DIR, key + ".mode"), mode + "\n")
+    write_text(os.path.join(override_dir(), key + ".mode"), mode + "\n")
 
 
 def remove_saved(key):
     for path in (
-        os.path.join(PROFILE_DIR, key + ".profile"),
-        os.path.join(PROFILE_DIR, key + ".mode"),
-        os.path.join(OVERRIDE_DIR, key + ".mode"),
+        os.path.join(profile_dir(), key + ".profile"),
+        os.path.join(profile_dir(), key + ".mode"),
+        os.path.join(override_dir(), key + ".mode"),
     ):
         if os.path.isfile(path):
             os.unlink(path)
@@ -682,7 +814,7 @@ def policy_key(path):
 def unique_key(key):
     candidate = key
     number = 2
-    while candidate in RESERVED or os.path.exists(os.path.join(PROFILE_DIR, candidate + ".profile")) or os.path.exists(os.path.join("/etc/apparmor.d", candidate)):
+    while candidate in RESERVED or os.path.exists(os.path.join(profile_dir(), candidate + ".profile")) or os.path.exists(os.path.join("/etc/apparmor.d", candidate)):
         candidate = f"{key}-{number}"
         number += 1
     return candidate
@@ -795,7 +927,7 @@ def import_file(path):
     existing = find_policy(name)
     if existing and existing["managed"] == "gui":
         key = existing["key"]
-    elif os.path.exists(os.path.join(PROFILE_DIR, key + ".profile")) or os.path.exists(os.path.join("/etc/apparmor.d", key)):
+    elif os.path.exists(os.path.join(profile_dir(), key + ".profile")) or os.path.exists(os.path.join("/etc/apparmor.d", key)):
         current = find_policy(name)
         key = current["key"] if current else unique_key(key)
     load_text(body, "complain")
@@ -989,6 +1121,10 @@ def main():
     command = sys.argv[1]
     if command == "overview":
         print(json.dumps(overview()))
+    elif command == "state":
+        print(json.dumps({"state": state_root()}))
+    elif command == "state-set" and len(sys.argv) == 3:
+        print(json.dumps(set_state(sys.argv[2])))
     elif command == "log":
         print(json.dumps(log_lines()))
     elif command == "set" and len(sys.argv) == 4:

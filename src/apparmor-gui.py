@@ -67,6 +67,9 @@ class Window(Gtk.ApplicationWindow):
         self.exec_profile = Gtk.DropDown.new_from_strings([])
         self.exec_command = Gtk.Entry(placeholder_text="command to run under the profile")
         self.exec_command.set_hexpand(True)
+        self.save_dir = Gtk.Label(xalign=0, wrap=True)
+        self.save_dir.set_hexpand(True)
+        self.save_dir.set_text("Saved profiles go in your home folder.")
 
         header = Gtk.HeaderBar()
         stack = Gtk.Stack()
@@ -145,7 +148,7 @@ class Window(Gtk.ApplicationWindow):
         scroll.set_child(self.page_box([
             self.heading(
                 "This machine",
-                "Running services and installed applications. Watch creates a complain-mode profile, which is what aa-autodep and the start of aa-genprof do, and saves it on this machine. It is loaded again after each rebuild. Flatpak apps stay in the Flatpak sandbox.",
+                "Running services and installed applications from this machine. Profiles already loaded by AppArmor are on the Profiles page. Flatpak apps stay in the Flatpak sandbox.",
             ),
             path_row,
             self.path_note,
@@ -158,12 +161,18 @@ class Window(Gtk.ApplicationWindow):
         return scroll
 
     def profiles_page(self):
+        choose = Gtk.Button(label="Choose folder")
+        choose.connect("clicked", self.on_choose_folder)
+        folder_row = Gtk.Box(spacing=8)
+        folder_row.append(self.save_dir)
+        folder_row.append(choose)
         scroll = Gtk.ScrolledWindow()
         scroll.set_child(self.page_box([
             self.heading(
                 "Profiles",
-                "Complain is aa-complain: the action is logged and allowed. Enforce is aa-enforce: the action is blocked. Disable is aa-disable: the profile is unloaded. Audit is aa-audit. The choice is saved on this machine and applied again after each rebuild.",
+                "These are the profiles on this machine, including ones NixOS installed and ones loaded now. Complain, enforce, disable, and audit apply immediately. A profile this window saves is written to the folder below. The usual folder is in your home directory.",
             ),
+            folder_row,
             self.profiles,
         ]))
         self.profiles.set_vexpand(True)
@@ -284,6 +293,8 @@ class Window(Gtk.ApplicationWindow):
         self.unconfined.get_buffer().set_text(("\n".join(lines) + extra) if lines else "No unconfined network processes reported.")
         self.profile_names = [item["name"] for item in data.get("profiles", [])]
         self.exec_profile.set_model(Gtk.StringList.new(self.profile_names or [" "]))
+        if data.get("state"):
+            self.save_dir.set_text("Saved profiles: " + data["state"])
 
     def fill_profiles(self, profiles):
         self.clear(self.profiles)
@@ -298,9 +309,9 @@ class Window(Gtk.ApplicationWindow):
                 bits.append(item["policy"])
             managed = item.get("managed")
             if managed == "gui":
-                bits.append("saved on this machine")
+                bits.append("saved in the chosen folder")
             elif managed == "override":
-                bits.append("mode saved on this machine")
+                bits.append("mode saved in the chosen folder")
             elif managed == "system":
                 bits.append("NixOS profile")
             elif not item.get("saved"):
@@ -537,6 +548,19 @@ class Window(Gtk.ApplicationWindow):
         view.get_buffer().set_text(text)
         window.set_child(Gtk.ScrolledWindow(child=view))
         window.present()
+
+    def on_choose_folder(self, *_args):
+        dialog = Gtk.FileDialog(title="Choose where to save profiles")
+        dialog.select_folder(self, None, self.folder_chosen)
+
+    def folder_chosen(self, dialog, result):
+        try:
+            chosen = dialog.select_folder_finish(result)
+        except GLib.Error:
+            return
+        path = chosen.get_path()
+        if path:
+            self.call(["state-set", path], f"Profiles will be saved in {path}.")
 
     def on_import(self):
         dialog = Gtk.FileDialog(title="Import an AppArmor profile")

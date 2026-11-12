@@ -12,7 +12,9 @@ nix run github:jdnitrap/apparmor-gui
 
 Installing the NixOS module also puts the window in the application list and loads its saved profiles after each rebuild. The module uses that system's own package set. `nix run` uses the nixpkgs pin in this flake. The flake does not contain a host configuration, a username, or any sample profiles.
 
-Profiles the window creates are stored in `/var/lib/apparmor-gui` and loaded again whenever AppArmor starts or reloads. The module does not edit your Nix files. A mode change for a profile that already comes from NixOS is stored beside it and applied after the system profile, so a package update still supplies the new profile text. Changing the rules copies the profile into `/var/lib/apparmor-gui`, and that copy is what the window keeps.
+`nix profile install` and `nix run` open the window on a machine that already has AppArmor. The window lists the profiles loaded there, the profiles NixOS installed, the running services, and the installed applications.
+
+Profiles the window saves go in `~/.local/share/apparmor-gui` for the account that opened it. Choose folder on the Profiles page stores them in another directory instead. The NixOS module reads the list of those folders and loads them again whenever AppArmor starts or reloads. The module does not edit your Nix files. A mode change for a profile that already comes from NixOS is stored beside the profile text and applied after the system profile, so a package update still supplies the new profile text.
 
 The window looks at the account that opened it. It is not built for one machine.
 
@@ -43,12 +45,13 @@ The window looks at the account that opened it. It is not built for one machine.
 ## What is stored
 
 ```
-/var/lib/apparmor-gui/profiles/<name>.profile
-/var/lib/apparmor-gui/profiles/<name>.mode
-/var/lib/apparmor-gui/overrides/<name>.mode
+~/.local/share/apparmor-gui/profiles/<name>.profile
+~/.local/share/apparmor-gui/profiles/<name>.mode
+~/.local/share/apparmor-gui/overrides/<name>.mode
+~/.config/apparmor-gui/directory
 ```
 
-The profile files are ones this window wrote. An override file only records complain, enforce, or disable for a profile that NixOS already installed. Removing an override brings the NixOS mode back. Removing a profile this window wrote does not delete a NixOS profile of the same name.
+The last file is one line, the folder chosen in the window. Until a folder is chosen, the home directory above is used. The profile files are ones this window wrote. An override file only records complain, enforce, or disable for a profile that NixOS already installed. Removing an override brings the NixOS mode back. Removing a profile this window wrote does not delete a NixOS profile of the same name. `/var/lib/apparmor-gui/directories` lists the folders the module loads after a rebuild. It does not hold the profiles.
 
 Flatpak applications are listed and are not given an AppArmor profile. AppArmor would only wrap the `flatpak` program.
 

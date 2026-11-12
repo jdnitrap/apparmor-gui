@@ -1,8 +1,9 @@
 # A window for the AppArmor tools. GTK 4 draws it on X11 or Wayland.
 # The package does not require a desktop environment or a window manager.
-# Profiles the window creates are stored in /var/lib/apparmor-gui and loaded
-# after the system's own profiles. The module does not edit the user's Nix files
-# and does not name a user, a host, or a configuration path.
+# Profiles the window creates are stored in the home directory of the person
+# who saved them, or in a folder that person chose. A registry lists those
+# folders so they can be loaded after the system's own profiles. The module
+# does not edit the user's Nix files and does not name a user or a host.
 { config, lib, pkgs, ... }:
 
 let
@@ -13,57 +14,60 @@ let
   # after aa-remove-unknown. A bad profile is reported and does not fail boot.
   loader = pkgs.writeShellScript "apparmor-gui-load" ''
     set -u
-    dir=/var/lib/apparmor-gui
     parser=${pkgs.apparmor-parser}/bin/apparmor_parser
     basename=${pkgs.coreutils}/bin/basename
     tr=${pkgs.coreutils}/bin/tr
     note() { printf 'apparmor-gui: %s\n' "$*" >&2; }
 
-    load_owned() {
-      profile=$1
-      key=$($basename "$profile" .profile)
-      mode=complain
-      if [ -f "$dir/profiles/$key.mode" ]; then
-        mode=$($tr -d '[:space:]' < "$dir/profiles/$key.mode")
+    load_tree() {
+      dir=$1
+      [ -d "$dir" ] || return 0
+      if [ -d "$dir/profiles" ]; then
+        for profile in "$dir/profiles"/*.profile; do
+          [ -f "$profile" ] || continue
+          key=$($basename "$profile" .profile)
+          mode=complain
+          if [ -f "$dir/profiles/$key.mode" ]; then
+            mode=$($tr -d '[:space:]' < "$dir/profiles/$key.mode")
+          fi
+          case "$mode" in
+            disable) "$parser" -R "$profile" || note "could not unload $key" ;;
+            enforce) "$parser" -r "$profile" || note "could not enforce $key" ;;
+            *) "$parser" -r -C "$profile" || note "could not complain $key" ;;
+          esac
+        done
       fi
-      case "$mode" in
-        disable) "$parser" -R "$profile" || note "could not unload $key" ;;
-        enforce) "$parser" -r "$profile" || note "could not enforce $key" ;;
-        *) "$parser" -r -C "$profile" || note "could not complain $key" ;;
-      esac
+      if [ -d "$dir/overrides" ]; then
+        for modefile in "$dir/overrides"/*.mode; do
+          [ -f "$modefile" ] || continue
+          key=$($basename "$modefile" .mode)
+          if [ -f "$dir/profiles/$key.profile" ]; then
+            continue
+          fi
+          installed=/etc/apparmor.d/$key
+          if [ ! -f "$installed" ]; then
+            note "no NixOS profile for $key"
+            continue
+          fi
+          mode=$($tr -d '[:space:]' < "$modefile")
+          case "$mode" in
+            disable) "$parser" -R "$installed" || note "could not unload $key" ;;
+            enforce) "$parser" -r "$installed" || note "could not enforce $key" ;;
+            complain) "$parser" -r -C "$installed" || note "could not complain $key" ;;
+            *) note "ignored unknown mode for $key" ;;
+          esac
+        done
+      fi
     }
 
-    load_override() {
-      modefile=$1
-      key=$($basename "$modefile" .mode)
-      if [ -f "$dir/profiles/$key.profile" ]; then
-        return 0
-      fi
-      installed=/etc/apparmor.d/$key
-      if [ ! -f "$installed" ]; then
-        note "no NixOS profile for $key"
-        return 0
-      fi
-      mode=$($tr -d '[:space:]' < "$modefile")
-      case "$mode" in
-        disable) "$parser" -R "$installed" || note "could not unload $key" ;;
-        enforce) "$parser" -r "$installed" || note "could not enforce $key" ;;
-        complain) "$parser" -r -C "$installed" || note "could not complain $key" ;;
-        *) note "ignored unknown mode for $key" ;;
-      esac
-    }
-
-    if [ -d "$dir/profiles" ]; then
-      for profile in "$dir/profiles"/*.profile; do
-        [ -f "$profile" ] || continue
-        load_owned "$profile"
-      done
-    fi
-    if [ -d "$dir/overrides" ]; then
-      for modefile in "$dir/overrides"/*.mode; do
-        [ -f "$modefile" ] || continue
-        load_override "$modefile"
-      done
+    registry=/var/lib/apparmor-gui/directories
+    if [ -f "$registry" ]; then
+      while IFS= read -r dir || [ -n "$dir" ]; do
+        case "$dir" in
+          ""|\#*) continue ;;
+        esac
+        load_tree "$dir"
+      done < "$registry"
     fi
     exit 0
   '';
